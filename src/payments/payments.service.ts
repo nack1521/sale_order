@@ -133,7 +133,7 @@ export class PaymentsService {
   }
 
   async createDummyPayments(count: number): Promise<Payment[]> {
-    // Load only _id and price once
+    // Load only _id and total_price once
     const products = await this.productModel.find({}, { _id: 1, total_price: 1 }).lean();
     if (products.length === 0) {
       throw new BadRequestException('No products found to reference in payments.');
@@ -142,7 +142,6 @@ export class PaymentsService {
     type Item = { _id: any; total_price?: number };
     const items = products as Item[];
 
-    // Pick 1–3 distinct indices
     const pickIndices = (): number[] => {
       const howMany = faker.number.int({ min: 1, max: 12 });
       const chosen = new Set<number>();
@@ -154,7 +153,7 @@ export class PaymentsService {
 
     const round2 = (n: number) => Math.round(n * 100) / 100;
 
-    // 0-based month: 7 = August
+    // 21/08/2025 00:00–23:59
     const startOfDay = new Date(2025, 7, 21, 0, 0, 0, 0);
     const endOfDay = new Date(2025, 7, 21, 23, 59, 59, 999);
 
@@ -175,55 +174,76 @@ export class PaymentsService {
 
     const saved = await this.paymentModel.insertMany(docs, { ordered: false });
 
-    // Batch cache to Redis
+    // Build price map once (string _id -> total_price)
+    const priceById = new Map<string, number>(
+      items.map(p => [String(p._id), Number(p.total_price ?? 0)])
+    );
+
+    // Reuse the caching helper in batch
+    await this.cachePaymentsToRedis(saved, priceById);
+
+    return saved;
+  }
+
+  // Cache many payments using a single MULTI
+  private async cachePaymentsToRedis(payments: any[], priceById: Map<string, number>) {
     const multi = this.redis.multi();
-    for (const payment of saved) {
-      const shop = String(payment.shop_id).toLowerCase() === 'lazada' ? 'lazada' : 'shopee';
-      const listKey = `${shop}_sale_order`;
-      const orderLineKey = `${shop}_order_line`;
-
-      const payload = {
-        id: String(payment._id),
-        grand_total: Number(payment.grand_total ?? 0),
-        product_list: (payment.product_list || []).map((id: any) => String(id)),
-        createdAt: payment.createdAt ? new Date(payment.createdAt).toISOString() : new Date().toISOString(),
-      };
-
-      multi.lPush(listKey, JSON.stringify(payload));
-      for (const pid of payload.product_list) {
-        multi.hIncrBy(orderLineKey, pid, 1);
-      }
+    for (const payment of payments) {
+      await this.cachePaymentToRedis(payment, priceById, multi);
     }
     try {
       await multi.exec();
     } catch (e) {
       console.error('Redis batch write failed:', e);
     }
-
-    return saved;
   }
 
-  private async cachePaymentToRedis(payment: any) {
+  // Cache one payment; can participate in a provided MULTI pipeline
+  private async cachePaymentToRedis(
+    payment: any,
+    priceById?: Map<string, number>,
+    pipeline?: ReturnType<RedisClientType['multi']>,
+  ) {
     const shop = String(payment.shop_id).toLowerCase() === 'lazada' ? 'lazada' : 'shopee';
     const listKey = `${shop}_sale_order`;
-    const orderLineKey = `${shop}_order_line`;
+    const orderLineKey = `${shop}_order_line`; // single hash per shop
+
+    // Ensure we have prices for the product_list
+    let prices = priceById;
+    if (!prices) {
+      const prods = await this.productModel.find(
+        { _id: { $in: payment.product_list || [] } },
+        { _id: 1, total_price: 1 },
+      ).lean();
+      prices = new Map(prods.map(p => [String(p._id), Number((p as any).total_price ?? 0)]));
+    }
 
     const payload = {
-      id: String(payment._id),
+      payment_id: String(payment._id),
       grand_total: Number(payment.grand_total ?? 0),
       product_list: (payment.product_list || []).map((id: any) => String(id)),
       createdAt: payment.createdAt ? new Date(payment.createdAt).toISOString() : new Date().toISOString(),
     };
 
-    const multi = this.redis.multi();
+    const multi = pipeline ?? this.redis.multi();
+
+    // 1) push sale order
     multi.lPush(listKey, JSON.stringify(payload));
+
+    // 2) per-product aggregates stored in one hash per shop
     for (const pid of payload.product_list) {
-      multi.hIncrBy(orderLineKey, pid, 1);
+      const unit = prices.get(pid) ?? 0;
+      // Fields are namespaced by pid so a single HGETALL returns all products
+      multi.hIncrBy(orderLineKey, `${pid}:product_quantity`, 1);
+      multi.hIncrByFloat(orderLineKey, `${pid}:total_price`, unit);
     }
-    try {
-      await multi.exec();
-    } catch (e) {
-      console.error('Redis single write failed:', e);
+
+    if (!pipeline) {
+      try {
+        await multi.exec();
+      } catch (e) {
+        console.error('Redis single write failed:', e);
+      }
     }
   }
 }
