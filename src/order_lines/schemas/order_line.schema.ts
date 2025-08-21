@@ -18,6 +18,9 @@ export class OrderLine {
 
   @Prop({ required: true })
   price_per_one_product: number;
+
+  @Prop({ required: true })
+  day: Date;
 }
 
 export const OrderLineSchema = SchemaFactory.createForClass(OrderLine);

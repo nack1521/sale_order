@@ -153,9 +153,8 @@ export class PaymentsService {
 
     const round2 = (n: number) => Math.round(n * 100) / 100;
 
-    // 21/08/2025 00:00–23:59
-    const startOfDay = new Date(2025, 7, 21, 0, 0, 0, 0);
-    const endOfDay = new Date(2025, 7, 21, 23, 59, 59, 999);
+    // Seed within 21/08/2025 00:00–23:59 in UTC+7 regardless of host tz
+    const { from: startOfDay, to: endOfDay } = this.dayRangeTZ(2025, 7, 21);
 
     const docs = Array.from({ length: count }, () => {
       const idxs = pickIndices();
@@ -174,14 +173,11 @@ export class PaymentsService {
 
     const saved = await this.paymentModel.insertMany(docs, { ordered: false });
 
-    // Build price map once (string _id -> total_price)
     const priceById = new Map<string, number>(
       items.map(p => [String(p._id), Number(p.total_price ?? 0)])
     );
 
-    // Reuse the caching helper in batch
     await this.cachePaymentsToRedis(saved, priceById);
-
     return saved;
   }
 
@@ -205,10 +201,15 @@ export class PaymentsService {
     pipeline?: ReturnType<RedisClientType['multi']>,
   ) {
     const shop = String(payment.shop_id).toLowerCase() === 'lazada' ? 'lazada' : 'shopee';
-    const listKey = `${shop}_sale_order`;
-    const orderLineKey = `${shop}_order_line`; // single hash per shop
+    const createdAt = payment.createdAt ? new Date(payment.createdAt) : new Date();
+    const dayKey = this.dayKeyTZ(createdAt); // use UTC+7 day key
 
-    // Ensure we have prices for the product_list
+    const listKey = `${shop}_sale_order`;
+    const listKeyDaily = `${shop}_sale_order:${dayKey}`;
+    const orderLineKey = `${shop}_order_line`;
+    const orderLineKeyDaily = `${orderLineKey}:${dayKey}`;
+
+    // Ensure we have prices...
     let prices = priceById;
     if (!prices) {
       const prods = await this.productModel.find(
@@ -222,28 +223,55 @@ export class PaymentsService {
       payment_id: String(payment._id),
       grand_total: Number(payment.grand_total ?? 0),
       product_list: (payment.product_list || []).map((id: any) => String(id)),
-      createdAt: payment.createdAt ? new Date(payment.createdAt).toISOString() : new Date().toISOString(),
+      // keep both if useful:
+      createdAtMs: createdAt.getTime(),           // epoch (tz-safe)
+      createdAtIso: createdAt.toISOString(),      // optional
+      shop_id: shop,
     };
 
     const multi = pipeline ?? this.redis.multi();
 
-    // 1) push sale order
+    // push sale order to global and daily lists
     multi.lPush(listKey, JSON.stringify(payload));
+    multi.lPush(listKeyDaily, JSON.stringify(payload));
 
-    // 2) per-product aggregates stored in one hash per shop
+    // per-product aggregates (global and daily)
     for (const pid of payload.product_list) {
-      const unit = prices.get(pid) ?? 0;
-      // Fields are namespaced by pid so a single HGETALL returns all products
+      const unit = priceById?.get(pid) ?? 0;
       multi.hIncrBy(orderLineKey, `${pid}:product_quantity`, 1);
       multi.hIncrByFloat(orderLineKey, `${pid}:total_price`, unit);
+
+      multi.hIncrBy(orderLineKeyDaily, `${pid}:product_quantity`, 1);
+      multi.hIncrByFloat(orderLineKeyDaily, `${pid}:total_price`, unit);
     }
 
     if (!pipeline) {
-      try {
-        await multi.exec();
-      } catch (e) {
-        console.error('Redis single write failed:', e);
-      }
+      try { await multi.exec(); } catch (e) { console.error('Redis single write failed:', e); }
     }
+  }
+
+  // Fixed timezone (UTC+7) in minutes
+  private readonly TZ_MINUTES = 7 * 60;
+
+  // Build YYYY-MM-DD for a given timezone (independent of host tz)
+  private dayKeyTZ(date: Date, tzMinutes = this.TZ_MINUTES) {
+    const shiftedMs = date.getTime() + (tzMinutes - date.getTimezoneOffset()) * 60000;
+    const shifted = new Date(shiftedMs);
+    const y = shifted.getUTCFullYear();
+    const m = String(shifted.getUTCMonth() + 1).padStart(2, '0');
+    const d = String(shifted.getUTCDate()).padStart(2, '0');
+    return `${y}-${m}-${d}`;
+  }
+
+  // Start/end of a specific local day for a timezone (as instants)
+  private dayRangeTZ(y: number, m0: number, d: number, tzMinutes = this.TZ_MINUTES) {
+    // create wall-clock times in target tz by shifting from host tz
+    const startLocal = new Date(y, m0, d, 0, 0, 0, 0);
+    const endLocal = new Date(y, m0, d, 23, 59, 59, 999);
+    const offsetDeltaMs = (tzMinutes - startLocal.getTimezoneOffset()) * 60000;
+    return {
+      from: new Date(startLocal.getTime() - offsetDeltaMs),
+      to: new Date(endLocal.getTime() - offsetDeltaMs),
+    };
   }
 }

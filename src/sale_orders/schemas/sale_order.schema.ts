@@ -12,23 +12,22 @@ export class SaleOrder {
   shop_id: string;
 
   @Prop({ 
-    type: [
-        {
-            order_line_id: { type: Types.ObjectId, required: true },
-            product_id: { type: Types.ObjectId, required: true }
-        }
-    ]})
-  order_lines: { order_line_id: Types.ObjectId, product_id: Types.ObjectId}[];
+    type: [Types.ObjectId], 
+    ref: 'OrderLine', default: [] 
+  }) 
+  order_lines: Types.ObjectId[];
 
   @Prop({
     type: [
         {
-            order_id: { type: Types.ObjectId, required: true }
+            order_id: { type: [String], required: true }
         }
     ]
   })
-  order_id_list: { order_id: Types.ObjectId }[];
+  order_id_list: { order_id: string[] }[];
 
+  @Prop({ required: true }) 
+  day: Date;
 }
 
 export const SaleOrderSchema = SchemaFactory.createForClass(SaleOrder);
