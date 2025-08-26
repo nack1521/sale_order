@@ -12,4 +12,11 @@ export class SaleReportController {
     const day = new Date(`${body.date}T00:00:00`);
     return this.saleReportService.generateDailyFromRedis(day);
   }
+
+  @Post('generate-daily-report-db')
+  @HttpCode(HttpStatus.OK)
+  async generateDailyReportDb(@Body() body: GenerateDailyReportDto) {
+    const day = new Date(`${body.date}T00:00:00`);
+    return this.saleReportService.generateDailyFromDb(day);
+  }
 }

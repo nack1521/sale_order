@@ -5,6 +5,8 @@ import { RedisModule } from '../redis/redis.module';
 import { OrderLine, OrderLineSchema } from 'src/order_lines/schemas/order_line.schema';
 import { SaleOrder, SaleOrderSchema } from 'src/sale_orders/schemas/sale_order.schema';
 import { SaleReportController } from './sale_report.controller';
+import { Payment, PaymentSchema } from 'src/payments/schemas/payment.schema';
+import { Product, ProductSchema } from 'src/products/schemas/product.schemas';
 
 @Module({
   imports: [
@@ -12,6 +14,8 @@ import { SaleReportController } from './sale_report.controller';
     MongooseModule.forFeature([
       { name: OrderLine.name, schema: OrderLineSchema },
       { name: SaleOrder.name, schema: SaleOrderSchema },
+      { name: Payment.name, schema: PaymentSchema },
+      { name: Product.name, schema: ProductSchema },
     ]),
   ],
   controllers: [SaleReportController],

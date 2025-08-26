@@ -202,7 +202,8 @@ export class PaymentsService {
   ) {
     const shop = String(payment.shop_id).toLowerCase() === 'lazada' ? 'lazada' : 'shopee';
     const createdAt = payment.createdAt ? new Date(payment.createdAt) : new Date();
-    const dayKey = this.dayKeyTZ(createdAt); // use UTC+7 day key
+    const dayKey = "2025-08-21"
+    console.log('dayKey', dayKey);
 
     const listKey = `${shop}_sale_order`;
     const listKeyDaily = `${shop}_sale_order:${dayKey}`;
@@ -253,25 +254,16 @@ export class PaymentsService {
   // Fixed timezone (UTC+7) in minutes
   private readonly TZ_MINUTES = 7 * 60;
 
-  // Build YYYY-MM-DD for a given timezone (independent of host tz)
-  private dayKeyTZ(date: Date, tzMinutes = this.TZ_MINUTES) {
-    const shiftedMs = date.getTime() + (tzMinutes - date.getTimezoneOffset()) * 60000;
-    const shifted = new Date(shiftedMs);
-    const y = shifted.getUTCFullYear();
-    const m = String(shifted.getUTCMonth() + 1).padStart(2, '0');
-    const d = String(shifted.getUTCDate()).padStart(2, '0');
-    return `${y}-${m}-${d}`;
-  }
 
   // Start/end of a specific local day for a timezone (as instants)
   private dayRangeTZ(y: number, m0: number, d: number, tzMinutes = this.TZ_MINUTES) {
     // create wall-clock times in target tz by shifting from host tz
     const startLocal = new Date(y, m0, d, 0, 0, 0, 0);
     const endLocal = new Date(y, m0, d, 23, 59, 59, 999);
-    const offsetDeltaMs = (tzMinutes - startLocal.getTimezoneOffset()) * 60000;
+    const offsetDeltaMs = (tzMinutes) * 60000;
     return {
-      from: new Date(startLocal.getTime() - offsetDeltaMs),
-      to: new Date(endLocal.getTime() - offsetDeltaMs),
+      from: new Date(startLocal.getTime() + offsetDeltaMs),
+      to: new Date(endLocal.getTime() + offsetDeltaMs),
     };
   }
 }
